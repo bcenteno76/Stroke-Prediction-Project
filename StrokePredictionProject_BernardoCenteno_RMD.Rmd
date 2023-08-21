@@ -1,0 +1,273 @@
+---
+title: "Stroke Prediction Project"
+author: "Bernardo Centeno"
+date: "2023-08-03"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+Summary
+
+Stroke is a leading cause of death and disability worldwide (1). Projections indicate that its prevalence will escalate in the coming years, placing considerable stress on healthcare systems and imposing substantial economic implications (2). Hence, the paramount significance of identifying individuals susceptible to stroke, benefiting both the affected persons and the broader community.
+The primary goal of this project was to construct a machine learning model capable of discerning individuals who have experienced a stroke based on diverse features. To accomplish this, the project employed the publicly accessible dataset titled 'Stroke Prediction Dataset,' accessible at https://www.kaggle.com/datasets/fedesoriano/stroke-prediction-dataset?resource=download. This dataset encompasses a total of 5110 instances and 12 variables, namely: id, gender, age, hypertension, heart_disease, ever_married, work_type, Residence_type, avg_glucose_level, bmi (body mass index), smoking_status, and Stroke.
+To fulfill the outlined objective, the project encompassed the subsequent stages: 1) Data exploration, cleaning, and visualization, 2) Division of the data into subsets, 3) Training and evaluation of machine learning models, and 4) Model validation. The ultimate model, based on the random forest algorithm, achieved an accuracy level of 95%.
+
+Method
+
+1)	Data exploration, cleaning, and visualization
+
+We first started by loading the necessary libraries and the dataset: 
+
+```{r}
+library(readxl)
+library(tidyverse)
+library(dplyr)
+library(caret)
+urlfile <- 'https://raw.githubusercontent.com/bcenteno76/StrokeProject/main/strokedata.csv'
+stroke_df <- read_csv(url(urlfile))
+```
+
+
+Then, we explored the structure of the dataset, and checked for the presence of missing values (NAs) and/or duplicates:
+
+
+```{r}
+str(stroke_df)
+any(is.na(stroke_df))
+any(duplicated(stroke_df))
+```
+
+The dataset was composed of 5110 observations and 12 variables,without any NAs or duplicates. The variables were: id, gender, age, hypertension, heart_disease, ever_married, work_type, Residence_type, avg_glucose_level, bmi (body mass index), smoking_status, and Stroke. As the variable "id" was not a predictor, it was removed from the dataset.
+We noticed that the class of the variables gender, hypertension, heart_disease, ever_married, work_type, Residence_type, bmi, smoking_status and stroke were either 'Character' or 'Interger', when in fact, they should be all 'Factor' variables, with the exception of 'bmi' which should be 'numeric'. Therefore, the necessary adjustments to the original data frame were implemented:
+
+
+```{r}
+stroke_df <- stroke_df %>% select(- id)%>% mutate(stroke = as.factor(stroke),
+                         bmi = as.numeric(bmi),
+                         gender = as.factor(gender),
+                         ever_married = as.factor(ever_married),
+                         smoking_status = as.factor(smoking_status),
+                         hypertension = as.factor(hypertension),
+                         heart_disease = as.factor(heart_disease),
+                         work_type = as.factor(work_type),
+                         Residence_type = as.factor(Residence_type))
+```
+
+When 'bmi' was parsed from 'character' to 'numeric', NAs were introduced by coercion, meaning that some values were not numbers; so, we decided to imput those NAs. We used the  Predictive Mean Matching (PMM) method for handling missing values from the mice package. The argument 'm = 5' indicates that five imputed datasets will be generated
+
+```{r}
+library(mice)
+datos_imputados <- mice(stroke_df, method = "pmm", m = 5, seed = 123)
+stroke_df <- complete(datos_imputados)
+```
+
+After adjusting the dataset, we studied the outcome (stroke) and each predictor:
+
+a) Stroke
+
+```{r,echo=FALSE}
+stroke_df %>%mutate(stroke = ifelse(stroke == 1, 'Yes', 'No'))%>%  # Bar graph: Gender Proportions
+  count(stroke) %>%                              
+  mutate(porcentaje = n / sum(n) * 100) %>%   
+  ggplot(aes(x = stroke, y = porcentaje,fill= stroke)) +      
+  geom_bar(stat = "identity") + 
+  labs(title = "Stroke Porportion", x = "Stroke", y = "%") +
+  scale_y_continuous(labels = scales::percent_format(scale = 1))+
+  geom_text(aes(label = paste(round(porcentaje, 1), "%"), y = porcentaje), vjust = -0.5, size = 4)+
+  theme(legend.position = "none")
+```
+
+
+The prevalence of stroke is 4.9%, which results in an imbalanced dataset. This imbalance can interfere with the performance of machine learning algorithms. For this reason, oversampling will be performed later as a method to address this issue.
+
+b) Gender
+
+Gender was a categorical (factor) variable. 59% of the sample was female, 41% male and 0% other.
+
+```{r,echo=FALSE}
+stroke_df %>%
+  count(gender) %>%                              
+  mutate(porcentaje = n / sum(n) * 100) %>%   
+  ggplot(aes(x = gender, y = porcentaje,fill= gender)) +      
+  geom_bar(stat = "identity") + 
+  labs(title = "Gender Porportions", x = "Gender", y = "%") +
+  scale_y_continuous(labels = scales::percent_format(scale = 1))+
+  geom_text(aes(label = paste(round(porcentaje, 1), "%"), y = porcentaje), vjust = -0.5, size = 4)+
+  theme(legend.position = "none")
+```
+
+The proportion of strokes in each stratum of the gender variable was:
+
+```{r,echo=FALSE}
+options(digits = 2)
+contingency_table <- stroke_df%>% mutate(stroke = ifelse(stroke == 1, 'yes','no'))%>%
+  select(stroke, gender)%>%table()
+prop.table(contingency_table, margin = 2) * 100
+```
+
+
+c) Age, bmi and average glucose level:
+
+First we explored this continuous variables and made boxplots for studying their distribution 
+
+```{r,echo=FALSE}
+stroke_df %>% select(age,bmi,avg_glucose_level)%>% summary()
+stroke_df%>% ggplot(aes(y=age))+ geom_boxplot()+ggtitle('Age Distribution')
+stroke_df%>% ggplot(aes(y=bmi))+ geom_boxplot()+ggtitle('BMI Distribution')
+stroke_df%>% ggplot(aes(y=avg_glucose_level))+ geom_boxplot()+ggtitle('Average Glucose Distribution')
+```
+
+While there were statistical outliers in the variables bmi and avg_glucose_level, we chose not to remove them as they are biologically plausible despite being extreme values (3-4).
+
+Then, we compared the distribution of each variable in patients with and without stroke
+
+```{r,echo=FALSE}
+stroke_df%>% mutate(stroke = ifelse(stroke == 1, 'yes','no'))%>% ggplot(aes(stroke,age))+ geom_boxplot()
+stroke_df%>% mutate(stroke = ifelse(stroke == 1, 'yes','no'))%>% ggplot(aes(stroke,bmi))+ geom_boxplot()
+stroke_df%>% mutate(stroke = ifelse(stroke == 1, 'yes','no'))%>% ggplot(aes(stroke,avg_glucose_level))+ geom_boxplot()
+```
+
+As evident from the analysis, individuals who experienced a stroke exhibited higher medians in terms of age, body mass index (bmi), and average glucose levels. This observation aligns with the literature, which has consistently demonstrated the association between these predictive factors and the incidence of stroke (5).
+
+d) hypertension, heart_disease, smoking_status, work_Type, ever_married and Residence_Type
+
+We explored the different proportions of stroke in each category of this predictors
+
+```{r,echo=FALSE}
+stroke_df%>% mutate(hypertension = ifelse(hypertension == '1','yes','no'))%>%
+  group_by(hypertension)%>% summarise(Stroke = (sum(stroke == 1)/n()) * 100)%>%
+  arrange(desc(Stroke))%>% rename('Stroke %' = Stroke, 'Hypertension' = hypertension)
+stroke_df%>% mutate(heart_disease = ifelse(heart_disease == '1','yes','no'))%>%
+  group_by(heart_disease)%>% summarise(Stroke = (sum(stroke == 1)/n()) * 100)%>%
+  arrange(desc(Stroke))%>% rename('Stroke %' = Stroke, 'Heart Disease' = heart_disease)
+stroke_df%>% group_by(smoking_status)%>% summarise(Stroke = (sum(stroke == 1)/n()) * 100)%>%arrange(desc(Stroke))%>% rename('Stroke %' = Stroke, 'Smoking Status' = smoking_status)
+stroke_df%>% group_by(work_type)%>% summarise(Stroke = (sum(stroke == 1)/n()) * 100)%>%
+  arrange(desc(Stroke))%>% rename('Stroke %' = Stroke, 'Work Type' = work_type)
+stroke_df%>% group_by(ever_married)%>% summarise(Stroke = (sum(stroke == 1)/n()) * 100)%>%arrange(desc(Stroke))%>% rename('Stroke %' = Stroke, 'Ever Married' = ever_married)
+stroke_df%>% group_by(Residence_type)%>% summarise(Stroke = (sum(stroke == 1)/n()) * 100)%>%arrange(desc(Stroke))%>% rename('Stroke %' = Stroke, 'Residence Type' = Residence_type)
+
+
+```
+
+It is noticeable that the proportions of stroke are higher in individuals with hypertension, heart disease, current or past smoking history, married status, urban residence, and/or self-employment. These results are consistent with the literature regarding the variables of hypertension, heart disease, and smoking status (5). However, the evidence is inconclusive regarding the variables of married status, urban residence, and self-employment.
+
+2)  Division of the data into subsets
+
+To have a set for training the model and a set to test it, the stroke_df dataset was partitioned into a train_set and a test_set respectively, using the createDataPartition() function from the caret package :
+
+```{r}
+set.seed(1)
+test_index <- createDataPartition(stroke_df$stroke,times = 1, p = 0.2, list = FALSE)
+train_set <- stroke_df[-test_index,]
+test_set <- stroke_df[test_index,]
+```
+
+As derived from the code above, 80% of the observations were randomly assigned to train_set and 20% to test_set. This percentage distribution is very common among data science projects. 
+
+Then, to address the issue of imbalance data (explained above) by means of oversampling, we utilized the upSample() function (caret package):
+
+```{r}
+train_set <- upSample(x = train_set[, -11], y = train_set$stroke, yname = "stroke")
+```
+
+
+3)  Training and evaluation of machine learning models
+
+For training different models we used the train() function (caret package), which allows to train different algorithms using similar syntax. It's important to note that the train() function automatically employs cross-validation, which by default is conducted using 25 bootstrap samples representing 25% of the observations.
+
+We started with a model based on logistic regression
+
+```{r}
+fit_glm <- train(stroke~., method= 'glm', data = train_set)
+y_hat <- predict(fit_glm,train_set) 
+result1 <- confusionMatrix(y_hat,train_set$stroke)$overall["Accuracy"]
+result1
+```
+
+obtaining an accuracy of 78%
+
+Our second model was trained using the k-nearest neighbors (knn) method. This algorithm is used to predict the class of a data point based on its features. It works by calculating the distance between the observations (data points) in the feature space. Given a specific data point, the knn algorithm identifies the k nearest neighbors to that point based on the calculated distances. Subsequently, the algorithm assigns the class of the data point by considering the majority class among its k nearest neighbors. The value of k is a critical parameter in the knn algorithm, with small or large values potentially leading to over-training or over-smoothing respectively.
+
+To set the k parameter, we used the tuneGrid argument, which expects a data frame with the parameter names as specified in the modelLookup output, so we defined a column named k
+
+```{r}
+fit_knn <- train(stroke~.,method = 'knn', data = train_set, 
+                 tuneGrid = data.frame(k = seq(7, 51, 2)))
+```
+
+We tested this model on the train_set:
+
+```{r}
+y_hat1 <- predict(fit_knn, train_set)
+result2 <- confusionMatrix(y_hat1,train_set$stroke)$overall["Accuracy"]
+result2
+```
+
+and we got an accuracy of 90%.
+
+Our third model was constructed using the Random Forest (rf) algorithm, which is employed to predict the class of a given data point based on its associated predictors. Unlike single decision trees prone to overfitting, rf leverages a collection of decision trees, each trained on different subsets of the data and predictors. When making a prediction, each tree in the forest independently classifies the data point, and the final class is determined through a majority vote among all the trees. By introducing randomness in both data sampling and feature selection, Random Forest mitigates overfitting and enhances generalization performance.
+
+```{r}
+fit_rf <- train(stroke~.,method = 'rf', data = train_set) 
+```
+
+We then proceed to test it on the train_set
+
+```{r}
+y_hat2 <- predict(fit_rf, train_set)
+result3 <- confusionMatrix(y_hat2,train_set$stroke)$overall["Accuracy"]
+result3
+```
+
+and we got a 100% accuracy.
+
+4) Model Validation
+
+We finally tested our rf-based model on the test_set:
+
+```{r}
+y_hat_rf <- predict(fit_rf, test_set)
+result4 <- confusionMatrix(y_hat_rf,test_set$stroke)$overall["Accuracy"]
+result4
+```
+
+and got an accuracy of 95%.
+
+Results
+
+Here we share a summary table showing the accuracy obtained for each model tested on the train_set, and for the final model on the test_set:
+
+```{r,echo=FALSE}
+results <- tibble(Method = c("glm",'knn',
+                                  'rf','Final model validation (rf)'),
+                       Accuracy = c(result1, result2, result3,result4))
+results 
+```
+
+As shown above, during the validation phase, the accuracy obtained for the final model on the test_set was 95%.
+
+Conclusion
+
+In conclusion, this project aimed to construct a machine learning model capable of accurately identifying individuals at risk of experiencing a stroke based on various features. By utilizing the 'Stroke Prediction Dataset' and employing techniques such as data exploration, cleaning, oversampling, and model training, we achieved a significant breakthrough in stroke prediction accuracy.
+
+However, it's important to acknowledge the limitations of this study. First, while the achieved accuracy is promising, further validation on larger and more diverse datasets is essential to ascertain the model's robustness. Additionally, our model is based on retrospective data, which may not fully capture the complexity of real-time clinical scenarios.
+
+Furthermore, the dataset's imbalanced nature, with a higher proportion of non-stroke cases, could have introduced bias and affected the generalization of the model. Although oversampling was performed to mitigate this issue, the potential for overfitting and introducing noise should be considered.
+
+In real-world application, the performance of the model would depend on the quality of input data and the prevalence of stroke in the population being studied. Clinical factors not included in the dataset could also impact the model's predictive ability.
+
+In conclusion, while the achieved accuracy is promising, further research, refinement, and validation are necessary to ensure the model's clinical utility and generalizability.
+
+References
+
+1) Saini, V., Guada, L., & Yavagal, D. R. (2021). Global epidemiology of stroke and access to acute ischemic stroke interventions. Neurology, 97(20 Supplement 2), S6-S16.
+
+2) Wafa, H. A., Wolfe, C. D., Emmett, E., Roth, G. A., Johnson, C. O., & Wang, Y. (2020). Burden of stroke in Europe: thirty-year projections of incidence, prevalence, deaths, and disability-adjusted life years. Stroke, 51(8), 2418-2427.
+
+3) Penman, A. D., & Johnson, W. D. (2006). The changing shape of the body mass index distribution curve in the population: implications for public health policy to reduce the prevalence of adult obesity. Preventing chronic disease, 3(3).
+
+4) Huang, W., Xu, W., Zhu, P., Yang, H., Su, L., Tang, H., & Liu, Y. (2017). Analysis of blood glucose distribution characteristics in a health examination population in Chengdu (2007–2015). Medicine, 96(49).
+
+5) Feigin, V. L., Stark, B. A., Johnson, C. O., Roth, G. A., Bisignano, C., Abady, G. G., ... & Hamidi, S. (2021). Global, regional, and national burden of stroke and its risk factors, 1990–2019: a systematic analysis for the Global Burden of Disease Study 2019. The Lancet Neurology, 20(10), 795-820.
